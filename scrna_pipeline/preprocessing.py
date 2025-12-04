@@ -239,6 +239,8 @@ def preprocess_to_pca(
             adata,
             n_top_genes=n_top_genes,
             flavor=hvg_flavor,
+            batch_key=batch_key,
+
         )
         adata = adata[:, adata.var["highly_variable"]].copy()
 
