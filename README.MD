@@ -1,4 +1,3 @@
-````markdown
 # scRNA-seq Pipeline
 
 A clean, modular, and extensible **scRNA-seq analysis pipeline** written in Python.  
@@ -171,7 +170,7 @@ For details, look at the example folder.
 
 ## 📄 License
 
-MIT License.
+MIT License. See the [LICENSE](LICENSE) file in the repository root for full details.
 
 ```
 ```
