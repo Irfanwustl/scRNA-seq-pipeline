@@ -172,5 +172,3 @@ For details, look at the example folder.
 
 MIT License. See the [LICENSE](LICENSE) file in the repository root for full details.
 
-```
-```
