@@ -1,0 +1,28 @@
+name: scrna-pipeline
+channels:
+  - conda-forge
+  - bioconda
+  - defaults
+
+dependencies:
+  - python=3.10
+  - scanpy=1.11.5
+  - anndata=0.11.4
+  - numpy
+  - pandas
+  - scipy
+  - scikit-learn
+  - matplotlib
+  - seaborn
+  - umap-learn
+  - h5py
+  - numba
+  - pynndescent
+  - statsmodels
+  - leidenalg
+  - louvain
+  - pip
+  - pip:
+      - scrublet==0.2.3
+      - harmonypy==0.0.10
+      - igraph==0.11.9
