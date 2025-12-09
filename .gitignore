@@ -1,9 +1,3 @@
-
----
-
-# ✅ **.gitignore (clean & practical for Python + Scanpy)**
-
-```gitignore
 # Python cache
 __pycache__/
 *.pyc
@@ -36,17 +30,16 @@ dist/
 # Logs
 *.log
 
-# Data files (keep code clean)
-*.h5
-*.h5ad
-*.loom
-*.mtx
-*.csv
-*.tsv
-*.txt
-*.gz
-*.zip
+# Data files (only ignore in data/ or results/ to keep code repo clean)
+data/**/*.h5
+data/**/*.h5ad
+data/**/*.loom
+data/**/*.mtx
+data/**/*.csv
+data/**/*.tsv
+data/**/*.txt
+data/**/*.gz
+data/**/*.zip
 
-# Large results from Scanpy
-**/figures/*
-**/results/*
+results/**
+figures/**
