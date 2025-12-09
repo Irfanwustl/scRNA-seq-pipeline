@@ -57,40 +57,12 @@ If you prefer Approach A, simply run your own per-sample preprocessing and merge
 
 ## 📦 Installation
 
-There are three clean ways to install this package depending on your workflow.
-
----
-
-### **1️⃣ Install using pip (recommended for most users)**
-
 Clone the repository:
 
 ```bash
 git clone https://github.com/Irfanwustl/scRNA-seq-pipeline.git
 cd scRNA-seq-pipeline
 ```
-
-Install dependencies:
-
-```bash
-pip install -r requirements.txt
-```
-
-Install the pipeline itself:
-
-```bash
-pip install -e .
-```
-
-You can now import the pipeline:
-
-```python
-from scrna_pipeline import standard_scrna_pipeline
-```
-
----
-
-### **2️⃣ Install using Conda (best for full reproducibility)**
 
 Create the environment:
 
@@ -102,20 +74,8 @@ conda activate scrna-pipeline
 Then install the package:
 
 ```bash
-pip install -e .
+pip install -e . --no-deps
 ```
-
----
-
-### **3️⃣ (Optional) Install pip-only extras**
-
-Some tools such as `scrublet`, `harmonypy`, and `igraph` may require pip-based wheels.
-If needed:
-
-```bash
-pip install ".[pip_extras]"
-```
-
 ---
 
 ### ✔️ After Installation
@@ -123,7 +83,7 @@ pip install ".[pip_extras]"
 Verify installation:
 
 ```bash
-python -c "import scrna_pipeline; print('Installed successfully!')"
+python -c 'import scrna_pipeline; print("Installed successfully!")'
 ```
 
 ---
