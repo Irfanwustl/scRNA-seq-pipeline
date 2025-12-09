@@ -23,16 +23,11 @@ This package provides a standard **end-to-end workflow**—from QC and Scrublet 
 ---
 
 ### **3. Clustering & Embedding**
-- KNN graph construction  
-- **Leiden** or **Louvain** clustering  
-- UMAP embedding (stored in `adata.obsm["X_umap"]`)
 
 ---
 
 ### **4. Marker-Based Annotation**
-- Per-cell marker scoring  
-- Cluster-level mean marker expression  
-- Auto-suggested labels (human-guided, not blind)  
+- Auto-suggested labels   
 - Easily plug in your own marker dictionaries
 
 ---
@@ -133,34 +128,105 @@ python -c "import scrna_pipeline; print('Installed successfully!')"
 
 ---
 
-### 📝 Requirements
-
-* Python 3.10+
-* Works on macOS (Intel/M1/M2/M3), Linux, and cloud environments
-
----
-
-## 🧪 Quickstart Example
+## 🧪 Quick Example: From RAW Matrix → h5ad → Full Pipeline → Annotation
 
 ```python
 import scanpy as sc
+from scrna_pipeline.h5ad_builders import raw_matrix_to_h5ad
 from scrna_pipeline import standard_scrna_pipeline
+from scrna_pipeline.annotation import score_markers_and_suggest_labels
 
-# Load your raw or processed AnnData
-adata = sc.read_h5ad("input.h5ad") # to build h5ad file use functions h5ad_builders.py
+# ---------------------------------------------------------------
+# 1) Convert a GEO-style RAW matrix into an AnnData (.h5ad) file
+# ---------------------------------------------------------------
+# Adjust the paths according to your dataset structure
+raw_txt = "input.raw.matrix.txt.gz"
+output_h5ad = "output.h5ad"
 
-# Run the pipeline
-adata_proc = standard_scrna_pipeline(
-    adata,
-    sample_key="sample",
-    batch_method="harmony",     # or "none"
-    min_genes=500,
-    min_cells=3,
-    scrublet=True
+adata_raw = raw_matrix_to_h5ad(
+    raw_file=raw_txt,
+    genes_are_rows=True,          # typical for GEO RAW matrices
+    sample_from_obs_names="suffix",
+    output_h5ad=output_h5ad,
 )
 
-# Inspect UMAP
-sc.pl.umap(adata_proc, color=["louvain", "suggested_label"])
+# Load the created AnnData file
+adata_raw = sc.read_h5ad(output_h5ad)
+
+# ---------------------------------------------------------------
+# 2) Run the standard pipeline 
+# ---------------------------------------------------------------
+
+# If your dataset has no batches, set:
+#     batch_key=None, batch_method="none"
+batch_key = "sample"
+
+adata_proc = standard_scrna_pipeline(
+    adata_raw,
+    batch_key=batch_key,
+    batch_method="harmony",     # use “none” to disable batch correction
+
+    # HVG settings
+    hvg_flavor="seurat_v3",
+    n_top_genes=2000,
+
+    # Clustering
+    clustering_method="leiden",
+
+    # Extra preprocessing options
+    preprocess_kwargs={
+        "use_mito_filter": True,
+        "use_ribo_filter": False,
+    },
+)
+
+# ---------------------------------------------------------------
+# 3) Marker-based annotation
+# ---------------------------------------------------------------
+
+# Example marker dictionary (edit for your tissues)
+marker_dict = {
+    "Epithelial": ["EPCAM", "KRT8", "KRT18", "KRT19"],
+    "T_cell": ["CD3D", "CD3E", "CD2", "CD8A", "CD4"],
+    "B_cell": ["MS4A1", "CD79A", "CD79B"],
+    "Myeloid": ["LYZ", "S100A8", "S100A9"],
+    "Endothelial": ["PECAM1", "VWF", "KDR"],
+    "Fibroblast": ["COL1A1", "COL1A2", "DCN"],
+    "Mast": ["TPSAB1", "TPSB2", "CPA3"],
+}
+
+# Pick clustering column automatically
+cluster_key = (
+    "leiden" if "leiden" in adata_proc.obs else
+    "louvain" if "louvain" in adata_proc.obs else
+    "cluster" if "cluster" in adata_proc.obs else
+    None
+)
+
+if cluster_key is None:
+    raise ValueError("No clustering column found in adata.obs.")
+
+# Compute cluster-level marker scores + suggested labels
+cluster_scores, suggested_labels = score_markers_and_suggest_labels(
+    adata_proc,
+    marker_dict,
+    cluster_key=cluster_key,
+)
+
+# Store suggested cell type labels
+adata_proc.obs["celltype"] = adata_proc.obs[cluster_key].map(suggested_labels)
+
+# ---------------------------------------------------------------
+# 4) Plot UMAP with suggested cell types
+# ---------------------------------------------------------------
+sc.pl.umap(
+    adata_proc,
+    color=["celltype", cluster_key],
+    legend_loc="on data",
+    frameon=False,
+    title="Marker-Based Cell Type Annotation",
+    legend_fontsize=8,
+)
 ```
 
 For details, look at the example folder.
