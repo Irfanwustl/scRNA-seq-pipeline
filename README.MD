@@ -66,9 +66,9 @@ There are three clean ways to install this package depending on your workflow.
 Clone the repository:
 
 ```bash
-git clone https://github.com/<your-username>/scrna-seq-pipeline.git
-cd scrna-seq-pipeline
-````
+git clone https://github.com/Irfanwustl/scRNA-seq-pipeline.git
+cd scRNA-seq-pipeline
+```
 
 Install dependencies:
 
@@ -113,7 +113,7 @@ Some tools such as `scrublet`, `harmonypy`, and `igraph` may require pip-based w
 If needed:
 
 ```bash
-pip install .[pip_extras]
+pip install ".[pip_extras]"
 ```
 
 ---
