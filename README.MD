@@ -149,7 +149,7 @@ marker_dict = {
     "Epithelial": ["EPCAM", "KRT8", "KRT18", "KRT19"],
     "T_cell": ["CD3D", "CD3E", "CD2", "CD8A", "CD4"],
     "B_cell": ["MS4A1", "CD79A", "CD79B"],
-    "Myeloid": ["LYZ", "S100A8", "S100A9"],
+    "Myeloid": ["LYZ", "CD68", "CD14", "TYROBP", "LST1", "CSF1R", "FCGR3A"]
     "Endothelial": ["PECAM1", "VWF", "KDR"],
     "Fibroblast": ["COL1A1", "COL1A2", "DCN"],
     "Mast": ["TPSAB1", "TPSB2", "CPA3"],
