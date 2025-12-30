@@ -4,6 +4,7 @@ import scipy.sparse as sp
 from pathlib import Path
 from typing import Union, Callable, Optional, List
 import scanpy as sc  
+import numpy as np
 
 
 # ============================================================
@@ -566,3 +567,142 @@ def tenx_folders_to_h5ad(
         print("💡 output_h5ad not provided → returning AnnData without saving.")
 
     return adata_all
+
+
+
+def _looks_integer_like(
+    values,
+    max_check: int = 200_000,
+    tol: float = 1e-6,
+) -> bool:
+    """
+    Heuristic to decide whether matrix values are (almost) integers.
+
+    Used to warn when a supposedly non-UMI matrix looks count-like.
+    """
+
+
+    if values.size == 0:
+        return True
+
+    flat = values.ravel()
+    if flat.size > max_check:
+        rng = np.random.default_rng(0)
+        idx = rng.choice(flat.size, size=max_check, replace=False)
+        flat = flat[idx]
+
+    flat = flat[np.isfinite(flat)]
+    if flat.size == 0:
+        return True
+
+    return np.all(np.abs(flat - np.round(flat)) < tol)
+
+
+
+def _strip_wrapping_quotes(index: pd.Index) -> pd.Index:
+    """
+    Remove wrapping single/double quotes (and surrounding whitespace) from names.
+
+    Safe no-op if names are not quoted.
+    Examples:
+      "'A1BG'"  -> "A1BG"
+      '"A1BG"'  -> "A1BG"
+      "A1BG"    -> "A1BG"
+    """
+    return index.astype(str).str.strip("\"' ")
+
+
+
+
+# ============================================================
+# Public API 4: single expression matrix (non-UMI) → AnnData
+# ============================================================
+
+def expr_matrix_to_h5ad(
+    raw_file: str,
+    output_h5ad: Optional[str] = None,
+    genes_are_rows: Union[str, bool] = "auto",
+    sample_from_obs_names: Union[None, str, Callable[[str], str]] = None,
+    layer_name: str = "expr",
+    set_raw: bool = False,
+    dtype=np.float32,
+) -> ad.AnnData:
+    """
+    Convert a non-UMI expression matrix (e.g., Smart-seq TPM/FPKM/log)
+    into an AnnData (.h5ad).
+
+    Intended for datasets like Tirosh et al. (2016), where the provided
+    matrix is already normalized/log-transformed and not UMI counts.
+
+    Design
+    ------
+    • `.X` stores the expression matrix (CSR sparse).
+    • `.layers[layer_name]` stores a copy of `.X`.
+    • `.raw` is not set by default (optional via `set_raw=True`).
+    • Does NOT label data as counts unless you explicitly choose to.
+
+    This keeps inferCNV-safe semantics without polluting the counts-based API.
+    """
+
+    df = _read_raw_matrix(raw_file)
+    n_rows, n_cols = df.shape
+
+    inferred_genes_are_rows = _infer_genes_are_rows(
+        n_rows, n_cols, genes_are_rows
+    )
+
+    data = _to_cells_by_genes(df, inferred_genes_are_rows)
+    # 🔧 Fix GEO-style quoted gene names if present
+    before = data.columns
+    after = _strip_wrapping_quotes(before)
+    n_changed = (before != after).sum()
+
+    if n_changed > 0:
+        print(f"🔧 Stripped wrapping quotes from {n_changed} gene names.")
+
+    data.columns = after
+
+
+
+    # Ensure numeric matrix
+    values = data.to_numpy(copy=False)
+    if not np.issubdtype(values.dtype, np.number):
+        values = data.astype(float).to_numpy(copy=False)
+
+    values = values.astype(dtype, copy=False)
+    X = sp.csr_matrix(values)
+
+    adata = ad.AnnData(X=X)
+    adata.obs_names = data.index
+    adata.var_names = data.columns
+
+    # Store expression explicitly
+    adata.layers[layer_name] = adata.X.copy()
+
+    # Warn if this *looks* like counts
+    if _looks_integer_like(values):
+        print(
+            "⚠️ Matrix appears integer-like. "
+            "If this is true UMI counts, consider using raw_matrix_to_h5ad()."
+        )
+
+    # Optional: derive sample column
+    _add_sample_from_obs_names(adata, sample_from_obs_names)
+
+    if set_raw:
+        adata.raw = adata
+        print("✅ adata.raw set to expression snapshot.")
+
+    print(
+        f"✅ AnnData created: {adata.n_obs} cells × {adata.n_vars} genes\n"
+        f"   → .X stores expression\n"
+        f"   → .layers['{layer_name}'] stores a copy"
+    )
+
+    if output_h5ad:
+        adata.write(output_h5ad)
+        print(f"🎉 Saved h5ad file → {output_h5ad}")
+    else:
+        print("💡 output_h5ad not provided → returning AnnData only.")
+
+    return adata
