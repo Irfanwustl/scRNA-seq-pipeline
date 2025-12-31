@@ -126,7 +126,7 @@ def standard_scrna_pipeline(
     if verbose:
         print("[ scrna-pipeline ] Step 1 complete: preprocess_to_pca")
         print("  • PCA stored in .obsm['X_pca']")
-        print("  • Genes after HVG selection:", adata.n_vars)
+        print("  • Genes retained:", adata.n_vars)
         print("  • Cells after QC / Scrublet:", adata.n_obs)
         print("")
 

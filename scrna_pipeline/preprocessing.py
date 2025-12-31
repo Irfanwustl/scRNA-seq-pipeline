@@ -4,9 +4,10 @@ Preprocessing utilities: QC, filtering, Scrublet, HVGs, normalization, PCA.
 The main function here is `preprocess_to_pca`, which prepares an AnnData object
 up to the PCA step, without performing any batch correction or clustering.
 
-Typical downstream usage:
-    - apply a batch correction method using `apply_batch_correction`
-    - run neighbors / clustering / UMAP using `cluster_and_embed`
+Key design choice (infercnv-friendly):
+- Keep ALL genes (do NOT subset to HVGs)
+- Use HVGs only for PCA/embedding (mask via `use_highly_variable=True`)
+- Keep normalized+log1p ALL genes available via `.raw` and `layers["log1p"]`
 """
 
 from __future__ import annotations
@@ -32,12 +33,12 @@ def preprocess_to_pca(
     max_counts: float = np.inf,
     # optional QC-based filters
     use_mito_filter: bool = True,
-    max_pct_mito: float | None = 10.0,    # default 10%; set None to disable threshold
+    max_pct_mito: float | None = 10.0,
     use_ribo_filter: bool = True,
-    max_pct_ribo: float | None = 10.0,    # default 10%; set None to disable threshold
+    max_pct_ribo: float | None = 10.0,
     use_hb_filter: bool = False,
-    max_pct_hb: float | None = 1.0,       # default 1%; set None to disable threshold
-    # whether to store normalized log-expression in .raw
+    max_pct_hb: float | None = 1.0,
+    # whether to store normalized log-expression in .raw (snapshot)
     set_raw: bool = True,
     # Scrublet doublet removal
     run_scrublet: bool = True,
@@ -50,57 +51,38 @@ def preprocess_to_pca(
     n_pcs: int = 50,
     scale_max_value: float = 10.0,
     random_state: int = 0,
+    # whether to store scaled HVGs in a layer (recommended)
+    store_scaled_hvg_layer: bool = True,
+    scaled_hvg_layer_key: str = "scaled_hvg",
+    log1p_layer_key: str = "log1p",
     verbose: bool = True,
 ) -> AnnData:
     """
     Preprocess scRNA-seq data up to PCA.
 
-    This function performs the "early" steps that are common to most analyses:
+    Pipeline:
+      0) Ensure raw counts are available in `adata.layers["counts"]` and use counts in `.X`
+      1) Filter genes by minimum number of cells (on counts)
+      2) Compute QC metrics (mito/ribo/hb)
+      3) Filter cells by QC thresholds (on counts/QC metrics)
+      4) Run Scrublet (on counts)
+      5) Normalize + log1p ALL genes (store in `layers["log1p"]`)
+      6) Compute HVGs (mask stored in `adata.var["highly_variable"]`, no subsetting)
+      7) Scale ONLY HVGs (store scaled HVGs in `layers["scaled_hvg"]` if enabled)
+      8) PCA using HVG mask (`use_highly_variable=True`)
 
-        0) Ensure raw counts are available in `adata.layers["counts"]`.
-        1) Filter genes by minimum number of cells.
-        2) Compute QC metrics (mito / ribo / hemoglobin percentages).
-        3) Optionally filter cells based on:
-           - gene counts
-           - total counts
-           - percent mito / ribo / hemoglobin
-        4) (Optional) Run Scrublet to remove predicted doublets.
-        5) Select highly variable genes (HVGs) with correct ordering:
-           - If `hvg_flavor == "seurat_v3"`:
-               HVGs are computed on raw counts (`layer="counts"`),
-               then normalize/log, optionally store `.raw`, then subset to HVGs.
-           - Otherwise:
-               normalize + log first, optionally store `.raw`,
-               then HVGs on log-normalized X, then subset to HVGs.
-        6) Scale and run PCA, storing the result in `adata.obsm["X_pca"]`.
-
-    `adata.raw` behavior
-    --------------------
-    If `set_raw=True` (default), the function stores a **normalized, log-transformed
-    version with all genes** in `adata.raw` *before* subsetting to HVGs. This is
-    the recommended pattern for downstream DEG analysis and marker scoring
-    (e.g. `sc.tl.rank_genes_groups`, `sc.tl.score_genes` with `use_raw=True`).
-
-    For very large datasets, users can disable this behavior with `set_raw=False`
-    to save memory.
-
-    QC filters
-    ----------
-    All three QC filters (mito / ribo / hb) are optional:
-        - `use_*_filter` controls whether the filter is applied.
-        - If a filter is enabled but its `max_pct_*` is None, a standard default
-          value is used (mito=10%, ribo=10%, hb=1%).
+    infercnvpy-friendly:
+      - all genes retained (important for genomic smoothing / CNV patterns)
+      - `.raw` stores a snapshot of log1p all genes
     """
 
     # ------------------------------------------------------------------ #
-    # 0) Ensure we are working with RAW COUNTS
+    # 0) Ensure raw counts layer exists, and `.X` is counts for QC steps
     # ------------------------------------------------------------------ #
-    # We keep a copy of the raw counts in `layers["counts"]` and also
-    # ensure that X contains counts before starting QC and HVG selection.
     if "counts" in adata.layers:
-        adata.X = adata.layers["counts"].copy()
+        adata.X = adata.layers["counts"]
     else:
-        adata.layers["counts"] = adata.X.copy()
+        adata.layers["counts"] = adata.X
 
     # ------------------------------------------------------------------ #
     # 1) Basic gene filter (remove genes seen in very few cells)
@@ -112,67 +94,52 @@ def preprocess_to_pca(
     # ------------------------------------------------------------------ #
     qc_vars: List[str] = []
 
-    # Mitochondrial genes: typically "MT-" prefix in human.
-    # We always compute mito QC so users can inspect it, even if they
-    # choose not to filter later.
     adata.var["mt"] = adata.var_names.str.upper().str.startswith("MT-")
     qc_vars.append("mt")
 
-    # Ribosomal genes: RPL* and RPS* (if enabled)
     if use_ribo_filter:
         upper_names = adata.var_names.str.upper()
-        adata.var["ribo"] = (
-            upper_names.str.startswith("RPL") |
-            upper_names.str.startswith("RPS")
-        )
+        adata.var["ribo"] = upper_names.str.startswith("RPL") | upper_names.str.startswith("RPS")
         qc_vars.append("ribo")
 
-    # Hemoglobin genes: HBA*, HBB*, HBD*, HBE*, HBG* (if enabled)
     if use_hb_filter:
         upper_names = adata.var_names.str.upper()
         hb_prefixes = ("HBA", "HBB", "HBD", "HBE", "HBG")
-        adata.var["hb"] = np.logical_or.reduce(
-            [upper_names.str.startswith(pref) for pref in hb_prefixes]
-        )
+        adata.var["hb"] = np.logical_or.reduce([upper_names.str.startswith(pref) for pref in hb_prefixes])
         qc_vars.append("hb")
 
-    # Compute per-cell QC metrics:
-    #   - total_counts
-    #   - n_genes_by_counts
-    #   - pct_counts_<qc_var> for each entry in qc_vars
     sc.pp.calculate_qc_metrics(adata, qc_vars=qc_vars, inplace=True)
 
     # ------------------------------------------------------------------ #
     # 3) Cell-level filters
     # ------------------------------------------------------------------ #
-    # Basic filters on number of genes and total counts
     cell_filter = (
-        (adata.obs["n_genes_by_counts"] >= min_genes) &
-        (adata.obs["n_genes_by_counts"] <= max_genes) &
-        (adata.obs["total_counts"] >= min_counts) &
-        (adata.obs["total_counts"] <= max_counts)
+        (adata.obs["n_genes_by_counts"] >= min_genes)
+        & (adata.obs["n_genes_by_counts"] <= max_genes)
+        & (adata.obs["total_counts"] >= min_counts)
+        & (adata.obs["total_counts"] <= max_counts)
     )
 
-    # Mitochondrial content filter (optional)
     if use_mito_filter and "pct_counts_mt" in adata.obs:
-        threshold = 10.0 if max_pct_mito is None else max_pct_mito
-        cell_filter &= adata.obs["pct_counts_mt"] <= threshold
+        thr = 10.0 if max_pct_mito is None else max_pct_mito
+        cell_filter &= adata.obs["pct_counts_mt"] <= thr
 
-    # Ribosomal content filter (optional)
     if use_ribo_filter and "pct_counts_ribo" in adata.obs:
-        threshold = 10.0 if max_pct_ribo is None else max_pct_ribo
-        cell_filter &= adata.obs["pct_counts_ribo"] <= threshold
+        thr = 10.0 if max_pct_ribo is None else max_pct_ribo
+        cell_filter &= adata.obs["pct_counts_ribo"] <= thr
 
-    # Hemoglobin content filter (optional)
     if use_hb_filter and "pct_counts_hb" in adata.obs:
-        threshold = 1.0 if max_pct_hb is None else max_pct_hb
-        cell_filter &= adata.obs["pct_counts_hb"] <= threshold
+        thr = 1.0 if max_pct_hb is None else max_pct_hb
+        cell_filter &= adata.obs["pct_counts_hb"] <= thr
 
-    # Apply all filters at once
     adata = adata[cell_filter, :].copy()
 
+    # Keep layers consistent after slicing (avoid views/backing surprises)
+    if "counts" in adata.layers:
+        adata.layers["counts"] = adata.layers["counts"].copy()
+
     # ------------------------------------------------------------------ #
-    # 4) Scrublet-based doublet detection (on raw counts)
+    # 4) Scrublet doublet detection (on counts)
     # ------------------------------------------------------------------ #
     if run_scrublet:
         if verbose:
@@ -183,14 +150,21 @@ def preprocess_to_pca(
             n_neighbors=scrublet_n_neighbors,
             threshold=scrublet_threshold,
         )
-        # Only pass batch_key to Scrublet if it was provided
         if batch_key is not None:
             scrublet_kwargs["batch_key"] = batch_key
 
         sc.pp.scrublet(adata, **scrublet_kwargs)
 
+        if "predicted_doublet" not in adata.obs:
+            raise RuntimeError("Scrublet ran but `adata.obs['predicted_doublet']` is missing.")
+
         n_before = adata.n_obs
         adata = adata[~adata.obs["predicted_doublet"], :].copy()
+
+        # Keep counts layer consistent after slicing
+        if "counts" in adata.layers:
+            adata.layers["counts"] = adata.layers["counts"].copy()
+
         n_after = adata.n_obs
 
         if verbose:
@@ -198,61 +172,80 @@ def preprocess_to_pca(
             print("After doublet removal:", adata.shape)
 
     # ------------------------------------------------------------------ #
-    # 5 & 6) HVGs + normalization / log1p + (optional) .raw
+    # 5) Normalize + log1p ALL genes (store in a layer)
+    # ------------------------------------------------------------------ #
+    # Work on counts -> normalized/log1p in `.X`, then store it
+    if "counts" not in adata.layers:
+        raise RuntimeError("Expected `adata.layers['counts']` to exist before normalization.")
+
+    adata.X = adata.layers["counts"].copy()
+    sc.pp.normalize_total(adata, target_sum=target_sum)
+    sc.pp.log1p(adata)
+
+    # Store log1p all genes (for infercnvpy, gene scoring, DEG, etc.)
+    adata.layers[log1p_layer_key] = adata.X.copy()
+
+    # Set .raw as a snapshot of current log1p state
+    if set_raw:
+        adata.raw = adata
+
+    # ------------------------------------------------------------------ #
+    # 6) HVG selection (mask only, NO subsetting)
     # ------------------------------------------------------------------ #
     if hvg_flavor == "seurat_v3":
-        # --- HVGs on RAW COUNTS (Seurat v3-style) ---
-        # Uses counts from `layer="counts"` and can use batch_key for
-        # per-batch HVG selection.
         sc.pp.highly_variable_genes(
             adata,
             n_top_genes=n_top_genes,
             flavor="seurat_v3",
             batch_key=batch_key,
-            layer="counts",   # crucial: HVGs computed on raw counts
+            layer="counts",
         )
-
-        # --- Then normalize & log-transform ALL genes ---
-        sc.pp.normalize_total(adata, target_sum=target_sum)
-        sc.pp.log1p(adata)
-
-        # Save clean normalized matrix for downstream DEG / scoring
-        if set_raw:
-            # Note: this duplicates the expression matrix and can be
-            # memory-intensive for very large datasets.
-            adata.raw = adata.copy()
-
-        # Finally, subset to HVGs selected from counts
-        adata = adata[:, adata.var["highly_variable"]].copy()
-
     else:
-        # --- First normalize & log-transform ALL genes ---
-        sc.pp.normalize_total(adata, target_sum=target_sum)
-        sc.pp.log1p(adata)
-
-        # Save clean normalized matrix before HVG filtering
-        if set_raw:
-            adata.raw = adata.copy()
-
-        # --- Then compute HVGs on log-normalized X ---
         sc.pp.highly_variable_genes(
             adata,
             n_top_genes=n_top_genes,
             flavor=hvg_flavor,
             batch_key=batch_key,
-
         )
-        adata = adata[:, adata.var["highly_variable"]].copy()
+
+    if "highly_variable" not in adata.var.columns:
+        raise RuntimeError("HVG computation failed: adata.var['highly_variable'] not found.")
 
     # ------------------------------------------------------------------ #
-    # 7) Scale + PCA
+    # 7) Scale ONLY HVGs (store to layer), keep `.X` as log1p all-genes
     # ------------------------------------------------------------------ #
-    sc.pp.scale(adata, max_value=scale_max_value)
-    sc.tl.pca(
-        adata,
-        n_comps=n_pcs,
-        svd_solver="arpack",
-        random_state=random_state,
-    )
+    if store_scaled_hvg_layer:
+        X0 = adata.X  # log1p all genes
+        try:
+            sc.pp.scale(
+                adata,
+                max_value=scale_max_value,
+                zero_center=True,
+                use_highly_variable=True,
+            )
+            adata.layers[scaled_hvg_layer_key] = adata.X.copy()
+        finally:
+            adata.X = X0  # restore log1p all genes
+
+    # ------------------------------------------------------------------ #
+    # 8) PCA using HVGs only
+    # ------------------------------------------------------------------ #
+    if store_scaled_hvg_layer:
+        sc.tl.pca(
+            adata,
+            n_comps=n_pcs,
+            svd_solver="arpack",
+            random_state=random_state,
+            use_highly_variable=True,
+            layer=scaled_hvg_layer_key,
+        )
+    else:
+        sc.tl.pca(
+            adata,
+            n_comps=n_pcs,
+            svd_solver="arpack",
+            random_state=random_state,
+            use_highly_variable=True,
+        )
 
     return adata
