@@ -215,17 +215,42 @@ def preprocess_to_pca(
     # 7) Scale ONLY HVGs (store to layer), keep `.X` as log1p all-genes
     # ------------------------------------------------------------------ #
     if store_scaled_hvg_layer:
-        X0 = adata.X  # log1p all genes
+        if "highly_variable" not in adata.var:
+            raise RuntimeError("Expected `adata.var['highly_variable']` before scaling.")
+
+        hvgs = adata.var["highly_variable"].to_numpy()
+        n_hvg = int(hvgs.sum())
+        if n_hvg == 0:
+            raise RuntimeError("No HVGs were selected (adata.var['highly_variable'].sum() == 0).")
+
+        X0 = adata.X  # log1p all genes (keep this as the canonical .X)
+
+        # Scale HVGs in a version-stable way:
+        # - make a temporary AnnData containing only HVGs
+        # - run sc.pp.scale on that (no `use_highly_variable` arg needed)
+        # - write scaled HVGs into a full-size matrix layer for PCA use
+        X_hvg = adata.X[:, hvgs].copy()
+
+        tmp = AnnData(X=X_hvg)
+        sc.pp.scale(tmp, max_value=scale_max_value, zero_center=True)
+
+        # Build a full (cells x genes) layer, but only HVG columns are scaled.
+        # Non-HVG columns are left as the original log1p values; they won't be used
+        # for PCA because we pass `use_highly_variable=True`.
         try:
-            sc.pp.scale(
-                adata,
-                max_value=scale_max_value,
-                zero_center=True,
-                use_highly_variable=True,
-            )
-            adata.layers[scaled_hvg_layer_key] = adata.X.copy()
-        finally:
-            adata.X = X0  # restore log1p all genes
+            # If X0 is sparse, assignment into sparse is painful.
+            # Create a dense layer for scaled_hvg (HVG count is small; dense is ok).
+            scaled_full = np.asarray(X0.todense() if hasattr(X0, "todense") else X0).copy()
+        except Exception:
+            scaled_full = np.asarray(X0).copy()
+
+        scaled_full[:, hvgs] = np.asarray(tmp.X)
+
+        adata.layers[scaled_hvg_layer_key] = scaled_full
+
+        # Restore `.X` (unchanged)
+        adata.X = X0
+
 
     # ------------------------------------------------------------------ #
     # 8) PCA using HVGs only

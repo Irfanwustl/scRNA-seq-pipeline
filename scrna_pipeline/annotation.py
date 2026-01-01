@@ -23,7 +23,7 @@ def score_markers_and_suggest_labels(
     adata: AnnData,
     marker_dict: Dict[str, List[str]],
     *,
-    cluster_key: str = "louvain",
+    cluster_key: str = "leiden",
     score_prefix: str = "",
     use_raw: bool | None = None,
 ) -> Tuple[pd.DataFrame, pd.Series]:
@@ -45,7 +45,7 @@ def score_markers_and_suggest_labels(
                 ...
             }
 
-        Only genes present in `adata.var_names` will be used, so you can safely
+        Only genes present in the scoring gene space (adata.raw.var_names if use_raw, else adata.var_names) will be used, so you can safely
         pass a large, generic marker list.
 
     cluster_key
@@ -116,12 +116,12 @@ def score_markers_and_suggest_labels(
     # ------------------------------------------------------------------ #
     # 1) Per-cell scores for each cell type
     # ------------------------------------------------------------------ #
+    var_names = adata.raw.var_names if use_raw_eff else adata.var_names
+
     score_cols: List[str] = []
     for celltype, genes in marker_dict.items():
-        # Filter to genes that exist in this dataset
-        genes_use = [g for g in genes if g in adata.var_names]
-        if len(genes_use) == 0:
-            # Skip if none of the markers are present for this cell type
+        genes_use = [g for g in genes if g in var_names]
+        if not genes_use:
             continue
 
         score_name = f"{score_prefix}{celltype}_score"
@@ -135,10 +135,12 @@ def score_markers_and_suggest_labels(
         )
 
     if not score_cols:
+        src = "adata.raw.var_names" if use_raw_eff else "adata.var_names"
         raise ValueError(
-            "No marker genes from marker_dict found in adata.var_names. "
+            f"No marker genes from marker_dict found in {src}. "
             "Check that your gene symbols match the dataset."
         )
+
 
     # ------------------------------------------------------------------ #
     # 2) Average scores per cluster
