@@ -32,29 +32,6 @@ This package provides a standard **end-to-end workflow**—from QC and Scrublet 
 
 ---
 
-## 📘 Working With Multi-Sample Datasets
-
-There are two approaches in scRNA-seq:
-
-### **A. Preprocess each sample independently (then merge)**
-Use this when:
-- samples differ in sequencing depth, chemistry, or library prep  
-- you want sample-specific QC thresholds  
-- file sizes are large and easier to handle per-sample  
-
-### **B. Merge raw counts first, then preprocess together**
-Use when:
-- all samples follow the same protocol  
-- you have enough memory to hold a combined matrix  
-- you want unified HVG selection and PCA across all samples  
-
-### ✔️ This package supports **Approach B**
-If you provide a single AnnData object containing multiple samples (with `adata.obs["sample"]`), the pipeline will treat them as one dataset and optionally apply **Harmony** to remove sample effects.
-
-If you prefer Approach A, simply run your own per-sample preprocessing and merge the resulting AnnData objects before passing them to downstream steps.
-
----
-
 ## 📦 Installation
 
 Clone the repository:

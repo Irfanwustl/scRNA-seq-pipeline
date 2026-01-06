@@ -1,5 +1,5 @@
 from __future__ import annotations
-from typing import Any, Dict
+from typing import Any, Dict,  List, Sequence
 
 import pprint
 
@@ -9,6 +9,8 @@ from anndata import AnnData
 from .preprocessing import preprocess_to_pca
 from .batch_correction import apply_batch_correction
 from .clustering import cluster_and_embed
+from .annotation import annotate_broad_celltypes_per_batch
+from .tumor_cell_classification.cnv import run_infercnv_per_batch
 
 
 def _short_dict(d: Dict[str, Any], max_items: int = 5) -> str:
@@ -194,5 +196,44 @@ def standard_scrna_pipeline(
     if "scrna_pipeline" not in adata.uns:
         adata.uns["scrna_pipeline"] = {}
     adata.uns["scrna_pipeline"]["standard_pipeline"] = cfg
+
+    return adata
+
+
+
+def standard_cnv_pipeline(
+    adata: AnnData,
+    *,
+    batch_key: str = "sample",
+    marker_dict: Dict[str, List[str]],
+    broad_celltype_key: str = "broad_celltype",
+    reference_celltypes: Sequence[str] = ("T_cell","B_cell","Myeloid","Endothelial","Fibroblast"),
+    preprocess_kwargs: Dict[str, Any] | None = None,
+    infercnv_kwargs: Dict[str, Any] | None = None,
+    verbose: bool = True,
+) -> AnnData:
+    preprocess_kwargs = {} if preprocess_kwargs is None else preprocess_kwargs
+    infercnv_kwargs = {} if infercnv_kwargs is None else infercnv_kwargs
+
+    adata = preprocess_to_pca(adata, batch_key=batch_key, **preprocess_kwargs)
+
+    annotate_broad_celltypes_per_batch(
+        adata,
+        marker_dict=marker_dict,
+        batch_key=batch_key,
+        out_key=broad_celltype_key,
+        verbose=verbose,
+    )
+
+    run_infercnv_per_batch(
+        adata,
+        batch_key=batch_key,
+        reference_key=broad_celltype_key,
+        reference_cat=list(reference_celltypes),
+        layer="log1p",
+        require_log1p=True,
+        infercnv_kwargs=infercnv_kwargs,
+        verbose=verbose,
+    )
 
     return adata

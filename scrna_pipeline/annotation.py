@@ -1,14 +1,14 @@
 """
 Helpers for semi-automatic cell type annotation.
 
-These functions are NOT meant to replace manual annotation. Instead, they:
-- compute marker-based scores per cell and per cluster
-- suggest a best-matching cell type per cluster
+Includes:
+- marker-based scoring and label suggestion per cluster
+- per-batch broad cell type annotation (no integration)
 
-You should always sanity-check suggestions with marker expression plots
-(e.g. dotplot, stacked violin) and biological knowledge before finalizing
-annotations.
+These utilities are NOT meant to replace manual annotation.
+Always validate with marker plots and biological knowledge.
 """
+
 
 from __future__ import annotations
 
@@ -172,3 +172,93 @@ def score_markers_and_suggest_labels(
     suggested_labels = cluster_scores_ctype.idxmax(axis=1)
 
     return cluster_scores_ctype, suggested_labels
+
+
+
+def annotate_broad_celltypes_per_batch(
+    adata: AnnData,
+    marker_dict: Dict[str, List[str]],
+    *,
+    batch_key: str = "sample",
+    out_key: str = "broad_celltype",
+    # lightweight per-batch clustering config (non-integrated)
+    rep_key: str = "X_pca",
+    n_neighbors: int = 15,
+    leiden_resolution: float = 0.6,
+    cluster_key: str = "_tmp_leiden",
+    # scoring config
+    score_prefix: str = "broad_",
+    use_raw: bool | None = None,
+    verbose: bool = True,
+) -> Tuple[pd.DataFrame, pd.Series]:
+    """
+    Assign broad cell types PER BATCH, without batch correction.
+
+    Strategy:
+      - For each batch: build neighbors on rep_key (default X_pca), Leiden cluster
+      - Use your existing `score_markers_and_suggest_labels` to label clusters
+      - Write per-cell labels into `adata.obs[out_key]`
+
+    Returns
+    -------
+    all_cluster_scores : pd.DataFrame
+        MultiIndex rows (batch, cluster) with mean marker scores per cluster.
+
+    all_suggested : pd.Series
+        MultiIndex (batch, cluster) -> suggested label.
+    """
+    if batch_key not in adata.obs:
+        raise KeyError(f"batch_key={batch_key!r} not in adata.obs")
+    if rep_key not in adata.obsm:
+        raise KeyError(f"rep_key={rep_key!r} not in adata.obsm. Run preprocess_to_pca first.")
+
+    adata.obs[out_key] = "Unknown"
+
+    batch_vals = adata.obs[batch_key].astype(str)
+    batches = batch_vals.unique().tolist()
+
+    cluster_scores_list: list[pd.DataFrame] = []
+    suggested_list: list[pd.Series] = []
+
+    for b in batches:
+        idx = (batch_vals == b).to_numpy()
+        if idx.sum() == 0:
+            continue
+
+        sub = adata[idx].copy()
+
+        # ---- quick within-batch clustering on non-integrated representation ----
+        sc.pp.neighbors(sub, use_rep=rep_key, n_neighbors=n_neighbors)
+        sc.tl.leiden(sub, resolution=leiden_resolution, key_added=cluster_key)
+
+        # ---- your existing scoring + suggestions ----
+        cluster_scores, suggested = score_markers_and_suggest_labels(
+            sub,
+            marker_dict,
+            cluster_key=cluster_key,
+            score_prefix=score_prefix,
+            use_raw=use_raw,
+        )
+
+        # Map cluster -> label and write per-cell labels back
+        sub_labels = sub.obs[cluster_key].map(suggested).astype(str)
+        adata.obs.loc[adata.obs.index[idx], out_key] = sub_labels.to_numpy()
+
+        # collect outputs for reporting
+        cs = cluster_scores.copy()
+        cs.index = pd.MultiIndex.from_product([[b], cs.index.astype(str)], names=[batch_key, "cluster"])
+        cluster_scores_list.append(cs)
+
+        sug = suggested.copy()
+        sug.index = pd.MultiIndex.from_product([[b], sug.index.astype(str)], names=[batch_key, "cluster"])
+        suggested_list.append(sug)
+
+        if verbose:
+            vc = pd.Series(sub_labels).value_counts().to_dict()
+            print(f"[broad annotate] batch={b} -> {vc}")
+
+    all_cluster_scores = pd.concat(cluster_scores_list, axis=0) if cluster_scores_list else pd.DataFrame()
+    all_suggested = pd.concat(suggested_list, axis=0) if suggested_list else pd.Series(dtype=str)
+
+    return all_cluster_scores, all_suggested
+
