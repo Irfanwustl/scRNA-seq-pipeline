@@ -235,7 +235,7 @@ class BroadAnnotationStep:
             "cluster_key": self.cluster_key,
             "score_prefix": self.score_prefix,
             "use_raw": self.use_raw,
-            "cluster_scores_shape": tuple(cluster_scores.shape),
+            "cluster_scores_shape": list(cluster_scores.shape),
         }
 
         return adata

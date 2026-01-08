@@ -11,8 +11,8 @@ Design philosophy
 -----------------
 - Keep the core tiny and stable.
 - Put biology/Scanpy logic in steps/* modules.
-- Put opinions/presets in presets/* modules.
-- Keep workflows/* as executors/drivers.
+- Put preset pipelines in pripelines/* modules.
+
 
 This module is intentionally dependency-light (standard library only).
 """
