@@ -1,5 +1,6 @@
 """
-Preprocessing utilities: QC, filtering, Scrublet, HVGs, normalization, PCA.
+Preprocessing utilities: QC, filtering, Scrublet, HVGs, normalization, PCA. 
+Also provides build_embedding_pca for integration-stage PCA without QC/Scrublet.
 
 The main function here is `preprocess_to_pca`, which prepares an AnnData object
 up to the PCA step, without performing any batch correction or clustering.
@@ -143,6 +144,80 @@ def _per_batch_qc_filter(
             print(msg)
 
     return mask, thresholds
+
+
+def _compute_hvgs(
+    adata: AnnData,
+    *,
+    batch_key: str | None,
+    hvg_flavor: str,
+    n_top_genes: int,
+) -> np.ndarray:
+    if hvg_flavor == "seurat_v3":
+        sc.pp.highly_variable_genes(
+            adata,
+            n_top_genes=n_top_genes,
+            flavor="seurat_v3",
+            batch_key=batch_key,
+            layer="counts",
+        )
+    else:
+        sc.pp.highly_variable_genes(
+            adata,
+            n_top_genes=n_top_genes,
+            flavor=hvg_flavor,
+            batch_key=batch_key,
+        )
+
+    if "highly_variable" not in adata.var:
+        raise RuntimeError("HVG computation failed: adata.var['highly_variable'] not found.")
+
+    hvgs = adata.var["highly_variable"].to_numpy()
+    if int(hvgs.sum()) == 0:
+        raise RuntimeError("No HVGs were selected.")
+    return hvgs
+
+
+def _compute_pca_from_log1p_hvgs(
+    adata: AnnData,
+    *,
+    hvgs: np.ndarray,
+    log1p_layer_key: str,
+    n_pcs: int,
+    scale_max_value: float,
+    random_state: int,
+) -> None:
+    from scipy import sparse
+    from sklearn.decomposition import PCA
+
+    if log1p_layer_key not in adata.layers:
+        raise RuntimeError(f"Expected adata.layers[{log1p_layer_key!r}] for PCA.")
+
+    X_log1p = adata.layers[log1p_layer_key]
+    X_hvg = X_log1p[:, hvgs]
+    X_hvg = X_hvg.toarray() if sparse.issparse(X_hvg) else np.asarray(X_hvg)
+
+    # standardize HVGs
+    mu = X_hvg.mean(axis=0, keepdims=True)
+    sd = X_hvg.std(axis=0, ddof=0, keepdims=True)
+    sd[sd == 0] = 1.0
+
+    X_hvg = (X_hvg - mu) / sd
+    X_hvg = np.clip(X_hvg, -scale_max_value, scale_max_value)
+
+    pca = PCA(n_components=n_pcs, random_state=random_state)
+    adata.obsm["X_pca"] = pca.fit_transform(X_hvg)
+
+    # scanpy-friendly pca metadata
+    adata.uns.setdefault("pca", {})
+    adata.uns["pca"]["variance_ratio"] = pca.explained_variance_ratio_
+    adata.uns["pca"]["params"] = {
+        "n_pcs": n_pcs,
+        "scale_max_value": scale_max_value,
+        "source_layer": log1p_layer_key,
+        "hvg_mask": True,
+    }
+
 
 
 def preprocess_to_pca(
@@ -358,64 +433,22 @@ def preprocess_to_pca(
     # ------------------------------------------------------------------ #
     # 6) HVG selection (mask only, NO subsetting)
     # ------------------------------------------------------------------ #
-    if hvg_flavor == "seurat_v3":
-        sc.pp.highly_variable_genes(
-            adata,
-            n_top_genes=n_top_genes,
-            flavor="seurat_v3",
-            batch_key=batch_key,
-            layer="counts",
-        )
-    else:
-        sc.pp.highly_variable_genes(
-            adata,
-            n_top_genes=n_top_genes,
-            flavor=hvg_flavor,
-            batch_key=batch_key,
-        )
 
-    if "highly_variable" not in adata.var.columns:
-        raise RuntimeError("HVG computation failed: adata.var['highly_variable'] not found.")
-
-    hvgs = adata.var["highly_variable"].to_numpy()
-    n_hvg = int(hvgs.sum())
-    if n_hvg == 0:
-        raise RuntimeError("No HVGs were selected (adata.var['highly_variable'].sum() == 0).")
-
+    hvgs = _compute_hvgs(adata, batch_key=batch_key, hvg_flavor=hvg_flavor, n_top_genes=n_top_genes)
     # ------------------------------------------------------------------ #
     # 7) PCA on scaled HVGs only (memory-safe; no dense full-gene layer)
     # ------------------------------------------------------------------ #
     # Keep `.X` as log1p all genes (canonical expression view)
     # Compute PCA from scaled HVG matrix and write result to `obsm["X_pca"]`.
-    try:
-        from scipy import sparse
-        from sklearn.decomposition import PCA
-    except Exception as e:
-        raise ImportError("This PCA path requires scipy and scikit-learn.") from e
+    _compute_pca_from_log1p_hvgs(
+        adata,
+        hvgs=hvgs,
+        log1p_layer_key=log1p_layer_key,
+        n_pcs=n_pcs,
+        scale_max_value=scale_max_value,
+        random_state=random_state,
+    )
 
-    X_log1p = adata.layers[log1p_layer_key]
-    X_hvg = X_log1p[:, hvgs]
-    X_hvg = X_hvg.toarray() if sparse.issparse(X_hvg) else np.asarray(X_hvg)
-
-    # standardize HVGs
-    mu = X_hvg.mean(axis=0, keepdims=True)
-    sd = X_hvg.std(axis=0, ddof=0, keepdims=True)
-    sd[sd == 0] = 1.0
-    X_hvg = (X_hvg - mu) / sd
-    X_hvg = np.clip(X_hvg, -scale_max_value, scale_max_value)
-
-    pca = PCA(n_components=n_pcs, random_state=random_state)
-    adata.obsm["X_pca"] = pca.fit_transform(X_hvg)
-
-    # scanpy-friendly pca metadata
-    adata.uns.setdefault("pca", {})
-    adata.uns["pca"]["variance_ratio"] = pca.explained_variance_ratio_
-    adata.uns["pca"]["params"] = {
-        "n_pcs": n_pcs,
-        "scale_max_value": scale_max_value,
-        "source_layer": log1p_layer_key,
-        "hvg_mask": True,
-    }
 
     return adata
 
@@ -462,6 +495,85 @@ class PreprocessToPCAStep:
 
     def outputs(self) -> Tuple[str, ...]:
         # useful if you want later validation / contracts
+        return ("obsm[X_pca]",)
+    
+
+
+
+def build_embedding_pca(
+    adata: AnnData,
+    *,
+    batch_key: str | None = "sample",
+    hvg_flavor: str = "seurat_v3",
+    n_top_genes: int = 2000,
+    n_pcs: int = 50,
+    log1p_layer_key: str = "log1p",
+    scale_max_value: float = 10.0,
+    random_state: int = 0,
+    require_log1p_layer: bool = True,
+) -> AnnData:
+    # strict: integration should not silently re-normalize
+    if require_log1p_layer and log1p_layer_key not in adata.layers:
+        raise RuntimeError(
+            f"Integration expects adata.layers[{log1p_layer_key!r}] to exist "
+            "from per-sample preprocessing."
+        )
+    
+    if hvg_flavor == "seurat_v3" and "counts" not in adata.layers:
+        raise RuntimeError("Expected layers['counts'] for seurat_v3 HVG computation.")
+
+
+    hvgs = _compute_hvgs(
+        adata,
+        batch_key=batch_key,
+        hvg_flavor=hvg_flavor,
+        n_top_genes=n_top_genes,
+    )
+    _compute_pca_from_log1p_hvgs(
+        adata,
+        hvgs=hvgs,
+        log1p_layer_key=log1p_layer_key,
+        n_pcs=n_pcs,
+        scale_max_value=scale_max_value,
+        random_state=random_state,
+    )
+    return adata
+
+
+
+
+@dataclass(frozen=True)
+class BuildEmbeddingPCAStep:
+    """
+    Compute HVGs + PCA for embedding from an already-processed AnnData.
+
+    Assumes:
+      - layers['log1p'] exists (unless require_log1p_layer=False)
+      - layers['counts'] exists when using seurat_v3 HVGs
+
+    Does NOT:
+      - QC, filtering, Scrublet, normalization
+    """
+
+    name: str = "build_embedding_pca"
+    batch_key: str | None = "sample"
+    hvg_flavor: str = "seurat_v3"
+    n_top_genes: int = 2000
+    n_pcs: int = 50
+    params: Optional[Dict[str, Any]] = None
+
+    def run(self, adata: AnnData, ctx) -> AnnData:
+        kwargs = dict(self.params or {})
+        return build_embedding_pca(
+            adata,
+            batch_key=self.batch_key,
+            hvg_flavor=self.hvg_flavor,
+            n_top_genes=self.n_top_genes,
+            n_pcs=self.n_pcs,
+            **kwargs,
+        )
+    
+    def outputs(self) -> Tuple[str, ...]:
         return ("obsm[X_pca]",)
 
 
