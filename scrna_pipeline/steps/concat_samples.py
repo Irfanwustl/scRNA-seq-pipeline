@@ -77,11 +77,12 @@ combined AnnData object suitable for downstream multi-sample analysis.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Iterable, Literal, Sequence
+from typing import Iterable, Literal, Sequence, Any, Dict, Optional, Tuple
 
 import anndata as ad
 from anndata import AnnData
 from pathlib import Path
+
 
 
 
@@ -458,3 +459,116 @@ def combine_samples(
     )
 
     return combined, reports
+
+
+
+
+
+
+@dataclass(frozen=True)
+class CombineSamplesStep:
+    """
+    Step wrapper for `combine_samples`.
+
+    Purpose
+    -------
+    Cleans each per-sample AnnData using an allowlist strategy, ensures globally
+    unique `obs_names` if needed, and concatenates with strict sanity checks.
+
+    Input modes
+    ----------
+    - In-memory: pass `adatas=[...]` via params (rare in pipeline steps)
+    - File-based: pass `folder=...` (recommended for batch runners)
+
+    Output
+    ------
+    Returns a *single* combined AnnData (cells concatenated).
+    Stores strip/concat reports in:
+      `adata.uns["scrna_pipeline"]["combine_samples"]["reports"]`
+
+    Notes
+    -----
+    - This step is typically used at the "integration boundary":
+        per-sample preprocessing -> save -> (this step) combine -> batch correction -> neighbors/UMAP
+    - The "reports" may be large; if that becomes an issue, you can store a
+      summary instead (counts of removed keys, etc.).
+    """
+
+    name: str = "combine_samples"
+
+    # Recommended usage: read from folder of .h5ad files
+    folder: str | None = None
+    pattern: str = "*.h5ad"
+
+    # Combine behavior
+    cfg: Any = None  # if None, CombineConfig() will be used inside run()
+
+    # Allowlist passthroughs to strip_per_sample_artifacts via combine_samples
+    keep_obs: Tuple[str, ...] = ("broad_celltype",)
+    keep_var: Tuple[str, ...] = ()
+    keep_uns: Tuple[str, ...] = ()
+    keep_layers: Tuple[str, ...] = ("counts", "log1p")
+    keep_broad_scores: bool = True
+    keep_id_obs_cols: bool = True
+
+    # Extra kwargs forwarded to combine_samples (rare)
+    params: Optional[Dict[str, Any]] = None
+
+    def run(self, adata: AnnData, ctx) -> AnnData:
+        """
+        This step ignores the incoming `adata` and produces a new combined AnnData.
+        The incoming object is treated as a placeholder to match the Step interface.
+        """
+        kwargs = dict(self.params or {})
+
+        cfg = self.cfg if self.cfg is not None else CombineConfig()
+
+        if self.folder is None and "adatas" not in kwargs:
+            raise ValueError(
+                "CombineSamplesStep requires either `folder=...` or `params={'adatas': [...]}`."
+            )
+
+        combined, reports = combine_samples(
+            # by default we want folder-driven usage; but allow adatas override via params
+            adatas=kwargs.pop("adatas", None),
+            folder=self.folder,
+            pattern=self.pattern,
+            cfg=cfg,
+            keep_obs=self.keep_obs,
+            keep_var=self.keep_var,
+            keep_uns=self.keep_uns,
+            keep_layers=self.keep_layers,
+            keep_broad_scores=self.keep_broad_scores,
+            keep_id_obs_cols=self.keep_id_obs_cols,
+            **kwargs,
+        )
+
+        # Store provenance
+        combined.uns.setdefault("scrna_pipeline", {})
+        combined.uns["scrna_pipeline"].setdefault("combine_samples", {})
+        combined.uns["scrna_pipeline"]["combine_samples"].update(
+            {
+                "folder": self.folder,
+                "pattern": self.pattern,
+                "cfg": {
+                    "sample_key": cfg.sample_key,
+                    "join": cfg.join,
+                    "ensure_unique_obs_names": cfg.ensure_unique_obs_names,
+                    "unique_delim": cfg.unique_delim,
+                    "required_layers": tuple(cfg.required_layers),
+                },
+                "keep_obs": tuple(self.keep_obs),
+                "keep_var": tuple(self.keep_var),
+                "keep_uns": tuple(self.keep_uns),
+                "keep_layers": tuple(self.keep_layers),
+                "keep_broad_scores": bool(self.keep_broad_scores),
+                "keep_id_obs_cols": bool(self.keep_id_obs_cols),
+                "reports": reports,  # list[StripReport]
+            }
+        )
+
+        return combined
+
+    def outputs(self) -> Tuple[str, ...]:
+        return ("combined_adata", "uns[scrna_pipeline/combine_samples/reports]")
+
