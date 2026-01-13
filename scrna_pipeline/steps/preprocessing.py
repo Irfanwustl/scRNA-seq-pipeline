@@ -557,7 +557,7 @@ class BuildEmbeddingPCAStep:
 
     name: str = "build_embedding_pca"
     batch_key: str | None = "sample"
-    hvg_flavor: str = "seurat_v3"
+    hvg_flavor: str = "seurat"
     n_top_genes: int = 2000
     n_pcs: int = 50
     params: Optional[Dict[str, Any]] = None

@@ -38,7 +38,8 @@ import numpy as np
 import pandas as pd
 import scanpy as sc
 from anndata import AnnData
-
+from pathlib import Path
+from typing import Union
 
 SampleResolver = Callable[[AnnData], pd.Series]
 
@@ -122,7 +123,7 @@ def resolve_sample_ids(
 
 
 def export_per_sample_h5ads(
-    multi_h5ad_path: str | Path,
+    multi_h5ad: str | Path | AnnData,
     out_dir: str | Path,
     *,
     sample_key: str | None = None,
@@ -155,8 +156,11 @@ def export_per_sample_h5ads(
 
     Parameters
     ----------
-    multi_h5ad_path
-        Path to input .h5ad containing one or many samples.
+    multi_h5ad
+        Either:
+        - Path to a .h5ad file containing one or many samples, or
+        - An in-memory AnnData object (already loaded).
+
 
     out_dir
         Directory to write per-sample .h5ad files.
@@ -201,11 +205,23 @@ def export_per_sample_h5ads(
         out_paths: list of written file paths
         n_cells_per_sample: Series mapping sample_id -> number of cells
     """
-    multi_h5ad_path = Path(multi_h5ad_path)
+    # -------------------------------
+    # Load / normalize input
+    # -------------------------------
+    if isinstance(multi_h5ad, AnnData):
+        adata = multi_h5ad
+    elif isinstance(multi_h5ad, (str, Path)):
+        adata = sc.read_h5ad(Path(multi_h5ad))
+    else:
+        raise TypeError(
+            "multi_h5ad must be one of: AnnData, str, or Path"
+        )
+
+  
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    adata = sc.read_h5ad(multi_h5ad_path)
+   
 
     sample_ids = resolve_sample_ids(
         adata,

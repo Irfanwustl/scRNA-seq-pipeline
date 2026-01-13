@@ -4,13 +4,14 @@ Strict per-sample pipeline preset.
 This preset defines a fixed, linear per-sample workflow:
     preprocess → cluster+umap → broad annotation
 
-It is intentionally strict:
-- No conditionals
-- No silent skipping
+Strict by default:
+- Core steps are always executed (no implicit skipping)
 - Missing inputs raise immediately
 
-Use a different preset if you want a different workflow.
+Optional steps (explicit opt-in):
+- inferCNV can be appended when `run_infercnv=True` (requires reference categories)
 """
+
 
 from __future__ import annotations
 
@@ -23,12 +24,13 @@ from scrna_pipeline.steps.clustering import ClusterAndEmbedStep
 from scrna_pipeline.steps.annotation import BroadAnnotationStep
 
 
+
 def standard_per_sample_pipeline(
     *,
     batch_key: str,
     marker_dict: Dict[str, List[str]],
     # preprocess
-    hvg_flavor: str = "seurat_v3",
+    hvg_flavor: str = "seurat",
     n_top_genes: int = 2000,
     n_pcs: int = 50,
     # clustering
@@ -39,6 +41,11 @@ def standard_per_sample_pipeline(
     cluster_key: str = "leiden",
     # annotation
     broad_label_key: str = "broad_celltype",
+
+    # inferCNV (optional)
+    run_infercnv: bool = False,
+    infercnv_reference_categories: list[str] | None = None,
+    infercnv_layer: str | None = None,
 ) -> list[StepSpec]:
     """
     Build a strict per-sample pipeline.
@@ -49,7 +56,7 @@ def standard_per_sample_pipeline(
     - marker_dict is valid
     """
 
-    return [
+    steps: list[StepSpec] = [
         StepSpec(
             name="preprocess_to_pca",
             step=PreprocessToPCAStep(
@@ -87,4 +94,34 @@ def standard_per_sample_pipeline(
             mode="required",
             on_error="raise",
         ),
+
     ]
+
+
+    if run_infercnv:
+        if not infercnv_reference_categories:
+            raise ValueError(
+                "run_infercnv=True requires infercnv_reference_categories "
+                f"matching labels in adata.obs['{broad_label_key}'] "
+                "(e.g. ['T_cell', 'B_cell', 'NK'])."
+            )
+        
+        from scrna_pipeline.steps.infercnv import InferCNVStep
+        
+        steps.append(
+            StepSpec(
+                name="infercnv",
+                step=InferCNVStep(
+                    reference_key=broad_label_key,
+                    reference_categories=infercnv_reference_categories,
+                    layer=infercnv_layer,
+                    require_log1p=True,
+                ),
+                mode="required",
+                on_error="raise",
+            )
+        )
+
+
+
+    return steps
