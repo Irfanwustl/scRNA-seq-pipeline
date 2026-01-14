@@ -15,7 +15,7 @@ Optional steps (explicit opt-in):
 
 from __future__ import annotations
 
-from typing import Dict, List
+from typing import Dict, List, Any
 
 from scrna_pipeline.core.pipeline import StepSpec
 
@@ -33,6 +33,7 @@ def standard_per_sample_pipeline(
     hvg_flavor: str = "seurat",
     n_top_genes: int = 2000,
     n_pcs: int = 50,
+    params: Dict[str, Any],
     # clustering
     rep_key: str = "X_pca",
     n_neighbors: int = 15,
@@ -55,6 +56,7 @@ def standard_per_sample_pipeline(
     - clustering_method creates `cluster_key`
     - marker_dict is valid
     """
+  
 
     steps: list[StepSpec] = [
         StepSpec(
@@ -64,6 +66,7 @@ def standard_per_sample_pipeline(
                 hvg_flavor=hvg_flavor,
                 n_top_genes=n_top_genes,
                 n_pcs=n_pcs,
+                params=params,
             ),
             mode="required",
             on_error="raise",
