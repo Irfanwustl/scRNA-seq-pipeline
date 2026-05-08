@@ -334,7 +334,11 @@ def run_infercnv(
         reference_key=reference_key,
         reference_cat=reference_cat,
         layer=layer,
+        calculate_gene_values=True,
     )
+
+
+
 
     return adata
 
